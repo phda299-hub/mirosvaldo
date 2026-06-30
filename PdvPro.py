@@ -3153,6 +3153,7 @@ class Venda:
         self.taxa_entrega = 0.0
         self.bairro_entrega = ""
         self.endereco_entrega = ""
+        self.status_entrega = "pendente"
 
 class ItemVenda:
     def __init__(self):
@@ -4811,7 +4812,8 @@ class DatabaseHelper:
                 taxa_entrega DECIMAL(10,2) DEFAULT 0,
                 bairro_entrega VARCHAR(150) DEFAULT NULL,
                 endereco_entrega VARCHAR(500) DEFAULT NULL,
-                uso_armario_id INT DEFAULT 0
+                uso_armario_id INT DEFAULT 0,
+                status_entrega VARCHAR(20) DEFAULT NULL
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
         """
 
@@ -5534,6 +5536,19 @@ class DatabaseHelper:
                     )
                 except Exception:
                     pass  # Coluna ja existe
+                # Migracao: colunas do MODULO DE ENTREGA em vendas (garantia para bancos antigos)
+                for _alter_entrega in (
+                    "ALTER TABLE vendas ADD COLUMN para_entrega TINYINT(1) DEFAULT 0",
+                    "ALTER TABLE vendas ADD COLUMN taxa_entrega DECIMAL(10,2) DEFAULT 0",
+                    "ALTER TABLE vendas ADD COLUMN bairro_entrega VARCHAR(150) DEFAULT NULL",
+                    "ALTER TABLE vendas ADD COLUMN endereco_entrega VARCHAR(500) DEFAULT NULL",
+                    "ALTER TABLE vendas ADD COLUMN celular_whatsapp VARCHAR(30) DEFAULT NULL",
+                    "ALTER TABLE vendas ADD COLUMN status_entrega VARCHAR(20) DEFAULT NULL",
+                ):
+                    try:
+                        cursor.execute(_alter_entrega)
+                    except Exception:
+                        pass  # Coluna ja existe
                 # Migracao corretiva: preencher cliente_nome em vendas de armario ja vinculadas
                 try:
                     cursor.execute(
@@ -6119,6 +6134,19 @@ class CupomGenerator:
                     _add_right(f"{qty} R$ {total}")
 
             sb.append(line_sep)
+
+            # === DADOS DE ENTREGA ===
+            if getattr(venda, "para_entrega", False):
+                _add("** ENTREGA **")
+                if getattr(venda, "bairro_entrega", ""):
+                    _add_wrap(f"Bairro: {venda.bairro_entrega}")
+                if getattr(venda, "endereco_entrega", ""):
+                    _add_wrap(f"Endereco: {venda.endereco_entrega}")
+                if getattr(venda, "celular_whatsapp", ""):
+                    _add_wrap(f"WhatsApp: {venda.celular_whatsapp}")
+                if getattr(venda, "entregador_nome", ""):
+                    _add_wrap(f"Entregador: {venda.entregador_nome}")
+                sb.append(line_sep)
 
             # === TOTAIS ===
             if venda.desconto_valor > 0:
@@ -10390,6 +10418,11 @@ class PDVApp:
         self.venda_cliente_nome = "Cliente nao informado"
         self.venda_vendedor_id = 0
         self.venda_entregador_id = 0
+        # --- Estado do MODULO DE ENTREGA ---
+        self.venda_para_entrega = False
+        self.venda_entregador_nome = ""
+        self.venda_bairro_entrega = ""
+        self.venda_taxa_entrega = 0.0
         AuditLogger.log("VENDA_ABERTA", usuario=Session.user_login)
 
         # Barra superior
@@ -10557,6 +10590,55 @@ class PDVApp:
         self.et_acrescimo.pack(side="left")
         self.et_acrescimo.bind("<KeyRelease>", lambda e: self.atualizar_totais_venda())
 
+        # === MODULO DE ENTREGA ===
+        self._entrega_card = tk.Frame(right, bg=COR_GLASS)
+        self._entrega_card.pack(fill="x", padx=15, pady=(8, 2))
+        self._var_entrega = tk.IntVar(value=0)
+        tk.Checkbutton(
+            self._entrega_card, text="🛵  Pedido para ENTREGA",
+            variable=self._var_entrega, command=self._toggle_entrega,
+            bg=COR_GLASS, fg=COR_ALERTA, selectcolor=COR_CARD,
+            activebackground=COR_GLASS, activeforeground=COR_PRIMARIA,
+            font=("Segoe UI", 10, "bold")).pack(anchor="w")
+
+        # Sub-frame com os dados da entrega (oculto ate marcar a opcao)
+        self._entrega_frame = tk.Frame(right, bg=COR_GLASS)
+
+        fb = tk.Frame(self._entrega_frame, bg=COR_GLASS)
+        fb.pack(fill="x", pady=1)
+        tk.Label(fb, text="Bairro:", bg=COR_GLASS, fg=COR_TEXTO,
+                 font=("Segoe UI", 9), width=8, anchor="w").pack(side="left")
+        self.lbl_bairro_entrega = tk.Label(fb, text="(nenhum)", bg=COR_CARD,
+                                           fg=COR_TEXTO, font=("Segoe UI", 9))
+        self.lbl_bairro_entrega.pack(side="left", fill="x", expand=True, padx=3)
+        StyledButton(fb, text="Buscar", command=self._selecionar_bairro_entrega,
+                     color=COR_BOTAO_AZUL, width=6).pack(side="right")
+
+        fe = tk.Frame(self._entrega_frame, bg=COR_GLASS)
+        fe.pack(fill="x", pady=1)
+        tk.Label(fe, text="Entreg.:", bg=COR_GLASS, fg=COR_TEXTO,
+                 font=("Segoe UI", 9), width=8, anchor="w").pack(side="left")
+        self.lbl_entregador_venda = tk.Label(fe, text="(a definir)", bg=COR_CARD,
+                                             fg=COR_TEXTO, font=("Segoe UI", 9))
+        self.lbl_entregador_venda.pack(side="left", fill="x", expand=True, padx=3)
+        StyledButton(fe, text="Buscar", command=self._selecionar_entregador_venda,
+                     color=COR_BOTAO_AZUL, width=6).pack(side="right")
+
+        tk.Label(self._entrega_frame, text="Endereco de entrega:", bg=COR_GLASS,
+                 fg=COR_TEXTO, font=("Segoe UI", 9)).pack(anchor="w", pady=(4, 0))
+        self.et_endereco_entrega = StyledEntry(self._entrega_frame, width=30)
+        self.et_endereco_entrega.pack(fill="x")
+
+        tk.Label(self._entrega_frame, text="WhatsApp:", bg=COR_GLASS,
+                 fg=COR_TEXTO, font=("Segoe UI", 9)).pack(anchor="w", pady=(4, 0))
+        self.et_whatsapp_entrega = StyledEntry(self._entrega_frame, width=30)
+        self.et_whatsapp_entrega.pack(fill="x")
+
+        self.lbl_taxa_entrega = tk.Label(self._entrega_frame, text="Taxa de entrega: R$ 0,00",
+                                         bg=COR_GLASS, fg=COR_ALERTA,
+                                         font=("Segoe UI", 10, "bold"))
+        self.lbl_taxa_entrega.pack(anchor="w", pady=4)
+
         # Total
         self.lbl_total_venda = tk.Label(right, text="TOTAL: R$ 0,00", bg=COR_CARD,
                                          fg=COR_SUCESSO, font=("Segoe UI", 16, "bold"))
@@ -10587,6 +10669,66 @@ class PDVApp:
             self.venda_cliente_id = row[0]
             self.venda_cliente_nome = row[1]
             self.lbl_cliente_venda.config(text=self.venda_cliente_nome)
+
+    # ------------------------------------------------------------------
+    # MODULO DE ENTREGA  -  captura de dados na tela de venda
+    # ------------------------------------------------------------------
+    def _toggle_entrega(self):
+        """Mostra/oculta a secao de entrega e recalcula o total."""
+        self.venda_para_entrega = bool(self._var_entrega.get())
+        if self.venda_para_entrega:
+            self._entrega_frame.pack(fill="x", padx=15, pady=2,
+                                     after=self._entrega_card)
+        else:
+            self._entrega_frame.pack_forget()
+            # Limpar dados de entrega ao desmarcar
+            self.venda_taxa_entrega = 0.0
+            self.venda_bairro_entrega = ""
+            self.venda_entregador_id = 0
+            self.venda_entregador_nome = ""
+            try:
+                self.lbl_bairro_entrega.config(text="(nenhum)")
+                self.lbl_entregador_venda.config(text="(a definir)")
+            except Exception:
+                pass
+        self.atualizar_totais_venda()
+
+    def _selecionar_bairro_entrega(self):
+        """Seleciona o bairro de entrega (define a taxa automaticamente)."""
+        def _on_bairro(row):
+            if not row:
+                return
+            self.venda_bairro_entrega = row[1]
+            try:
+                self.venda_taxa_entrega = float(row[2])
+            except Exception:
+                self.venda_taxa_entrega = 0.0
+            self.lbl_bairro_entrega.config(
+                text=f"{row[1]}  (R$ {FormatUtils.format_money(self.venda_taxa_entrega)})")
+            self.atualizar_totais_venda()
+
+        self._selecionar_registro(
+            "taxa_entrega_bairro", "Selecionar Bairro / Taxa",
+            "SELECT id, bairro, taxa FROM taxa_entrega_bairro WHERE ativo = 1 ORDER BY bairro",
+            ["ID", "Bairro", "Taxa (R$)"],
+            _on_bairro
+        )
+
+    def _selecionar_entregador_venda(self):
+        """Seleciona o entregador responsavel pela entrega."""
+        def _on_entregador(row):
+            if not row:
+                return
+            self.venda_entregador_id = row[0]
+            self.venda_entregador_nome = row[1]
+            self.lbl_entregador_venda.config(text=row[1])
+
+        self._selecionar_registro(
+            "entregadores", "Selecionar Entregador",
+            "SELECT id, nome, celular FROM entregadores WHERE ativo = 1 ORDER BY nome",
+            ["ID", "Nome", "Celular"],
+            _on_entregador
+        )
 
     def buscar_por_codigo(self):
         codigo = self.et_codigo_barras.get().strip()
@@ -10699,9 +10841,17 @@ class PDVApp:
         desconto = desc_val if "R$" in desc_tipo else (subtotal * desc_val / 100)
         acrescimo = acre_val if "R$" in acre_tipo else (subtotal * acre_val / 100)
 
-        total = subtotal - desconto + acrescimo
+        taxa_entrega = (self.venda_taxa_entrega or 0) if getattr(self, "venda_para_entrega", False) else 0
+        total = subtotal - desconto + acrescimo + taxa_entrega
         if total < 0:
             total = 0
+
+        # Atualizar rotulo da taxa de entrega (se a secao existir)
+        try:
+            self.lbl_taxa_entrega.config(
+                text=f"Taxa de entrega: R$ {FormatUtils.format_money(taxa_entrega)}")
+        except Exception:
+            pass
 
         self.lbl_subtotal.config(
             text=f"Subtotal: R$ {FormatUtils.format_money(subtotal)}")
@@ -11193,7 +11343,8 @@ class PDVApp:
         acre_tipo = self.combo_acre_tipo.get()
         desconto = desc_val if "R$" in desc_tipo else (subtotal * desc_val / 100)
         acrescimo = acre_val if "R$" in acre_tipo else (subtotal * acre_val / 100)
-        total = subtotal - desconto + acrescimo
+        taxa_entrega = (self.venda_taxa_entrega or 0) if getattr(self, "venda_para_entrega", False) else 0
+        total = subtotal - desconto + acrescimo + taxa_entrega
         if total < 0:
             total = 0
 
@@ -11204,6 +11355,19 @@ class PDVApp:
         self.venda_acrescimo_tipo = "valor" if "R$" in acre_tipo else "percentual"
         self.venda_total_liquido = total
         self.venda_observacao = self.et_obs_venda.get("1.0", "end").strip()
+        # Capturar dados de entrega (endereco/whatsapp) digitados no painel
+        if getattr(self, "venda_para_entrega", False):
+            try:
+                self.venda_endereco_entrega = self.et_endereco_entrega.get().strip()
+            except Exception:
+                self.venda_endereco_entrega = ""
+            try:
+                self.venda_celular_whatsapp = self.et_whatsapp_entrega.get().strip()
+            except Exception:
+                self.venda_celular_whatsapp = ""
+        else:
+            self.venda_endereco_entrega = ""
+            self.venda_celular_whatsapp = ""
         self.pagamentos_venda = []
 
         # Carregar formas de pagamento
@@ -11407,12 +11571,19 @@ class PDVApp:
             venda_id = db.execute_update(
                 "INSERT INTO vendas (cliente_id, cliente_nome, vendedor_id, entregador_id, caixa_id, "
                 "total_bruto, desconto_tipo, desconto_valor, acrescimo_tipo, acrescimo_valor, "
-                "total_liquido, valor_recebido, troco, observacao, status, uso_armario_id) "
-                "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,'finalizada',%s)",
+                "total_liquido, valor_recebido, troco, observacao, status, uso_armario_id, "
+                "para_entrega, taxa_entrega, bairro_entrega, endereco_entrega, celular_whatsapp, status_entrega) "
+                "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,'finalizada',%s,%s,%s,%s,%s,%s,%s)",
                 (self.venda_cliente_id, nome_cliente_venda, self.venda_vendedor_id, self.venda_entregador_id,
                  Session.caixa_id, self.venda_total_bruto, self.venda_desconto_tipo,
                  self.venda_desconto_valor, self.venda_acrescimo_tipo, self.venda_acrescimo_valor,
-                 self.venda_total_liquido, total_pago, troco, self.venda_observacao, uso_armario_id_venda)
+                 self.venda_total_liquido, total_pago, troco, self.venda_observacao, uso_armario_id_venda,
+                 1 if getattr(self, "venda_para_entrega", False) else 0,
+                 (self.venda_taxa_entrega or 0) if getattr(self, "venda_para_entrega", False) else 0,
+                 getattr(self, "venda_bairro_entrega", "") or None,
+                 getattr(self, "venda_endereco_entrega", "") or None,
+                 getattr(self, "venda_celular_whatsapp", "") or None,
+                 "pendente" if getattr(self, "venda_para_entrega", False) else None)
             )
 
             for item in self.carrinho:
@@ -11463,6 +11634,13 @@ class PDVApp:
             venda.valor_recebido = total_pago
             venda.troco = troco
             venda.observacao = self.venda_observacao
+            # Dados de entrega (para o cupom exibir taxa/endereco)
+            venda.para_entrega = bool(getattr(self, "venda_para_entrega", False))
+            venda.taxa_entrega = (self.venda_taxa_entrega or 0) if venda.para_entrega else 0.0
+            venda.bairro_entrega = getattr(self, "venda_bairro_entrega", "") or ""
+            venda.endereco_entrega = getattr(self, "venda_endereco_entrega", "") or ""
+            venda.celular_whatsapp = getattr(self, "venda_celular_whatsapp", "") or ""
+            venda.entregador_nome = getattr(self, "venda_entregador_nome", "") or ""
             venda.data_venda = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
             # Carregar dados da empresa para o cupom
@@ -21404,31 +21582,271 @@ function enviarPedido() {{
                  bg=COR_FUNDO, fg=COR_TEXTO2,
                  font=("Segoe UI", 11), justify="center").pack(pady=10)
 
+    # ====================================================================
+    # MODULO DE ENTREGA - helpers compartilhados
+    # ====================================================================
+    def _entrega_status_label(self, status):
+        return {
+            "pendente": "Pendente",
+            "em_rota": "Em rota",
+            "entregue": "Entregue",
+        }.get((status or "pendente"), status or "Pendente")
+
+    def _entrega_set_status(self, venda_id, status, on_done=None):
+        """Atualiza o status de entrega de uma venda (pendente/em_rota/entregue)."""
+        db = DatabaseHelper.get_instance()
+
+        def upd():
+            return db.execute_update(
+                "UPDATE vendas SET status_entrega = %s WHERE id = %s",
+                (status, venda_id))
+
+        def done(_r):
+            try:
+                AuditLogger.log("ENTREGA_STATUS",
+                                f"Venda #{venda_id} -> {status}",
+                                usuario=Session.user_login)
+            except Exception:
+                pass
+            ToastManager.success(
+                f"Venda #{venda_id}: {self._entrega_status_label(status)}")
+            if on_done:
+                on_done()
+
+        self.run_async(upd, done)
+
     def show_modo_entregador(self):
-        """Modo Entregador - visualizar entregas pendentes."""
+        """Modo Entregador - o entregador visualiza e conclui suas entregas."""
         self.clear_container()
-        top = self._create_top_bar(f"{Icons.ENTREGA} Modo Entregador")
+        self._create_top_bar(f"{Icons.ENTREGA} Modo Entregador")
         content = tk.Frame(self.main_container, bg=COR_FUNDO)
-        content.pack(fill="both", expand=True, padx=20, pady=20)
-        tk.Label(content, text="Modo Entregador",
-                 bg=COR_FUNDO, fg=COR_PRIMARIA,
-                 font=("Segoe UI", 18, "bold")).pack(pady=20)
-        tk.Label(content, text="Funcionalidade em desenvolvimento.\nEm breve voce podera visualizar suas entregas pendentes aqui.",
-                 bg=COR_FUNDO, fg=COR_TEXTO2,
-                 font=("Segoe UI", 11), justify="center").pack(pady=10)
+        content.pack(fill="both", expand=True, padx=20, pady=12)
+
+        tk.Label(content, text="Modo Entregador", bg=COR_FUNDO, fg=COR_PRIMARIA,
+                 font=("Segoe UI", 16, "bold")).pack(anchor="w")
+        tk.Label(content,
+                 text="Selecione o entregador para ver as entregas pendentes e a caminho.",
+                 bg=COR_FUNDO, fg=COR_TEXTO2, font=("Segoe UI", 10)).pack(
+                     anchor="w", pady=(0, 8))
+
+        sel_frame = tk.Frame(content, bg=COR_FUNDO)
+        sel_frame.pack(fill="x", pady=4)
+        tk.Label(sel_frame, text="Entregador:", bg=COR_FUNDO, fg=COR_TEXTO,
+                 font=("Segoe UI", 11)).pack(side="left", padx=(0, 6))
+        combo = ttk.Combobox(sel_frame, width=30, state="readonly")
+        combo.pack(side="left", padx=4)
+
+        cols = ("id", "data", "cliente", "bairro", "endereco", "whatsapp", "total", "status")
+        tree = ttk.Treeview(content, columns=cols, show="headings", height=13)
+        defs = [("id", "#", 50), ("data", "Data", 130), ("cliente", "Cliente", 150),
+                ("bairro", "Bairro", 110), ("endereco", "Endereco", 230),
+                ("whatsapp", "WhatsApp", 120), ("total", "Total", 90),
+                ("status", "Status", 90)]
+        for key, txt, w in defs:
+            tree.heading(key, text=txt)
+            tree.column(key, width=w,
+                        anchor="center" if key in ("id", "total", "status", "data") else "w")
+        tree.pack(fill="both", expand=True, pady=8)
+
+        entregadores_cache = []
+
+        def carregar_entregas():
+            i = combo.current()
+            if i < 0 or i >= len(entregadores_cache):
+                return []
+            ent = entregadores_cache[i]
+            db = DatabaseHelper.get_instance()
+            return db.execute_query(
+                "SELECT v.id, v.data_venda, COALESCE(c.nome, v.cliente_nome, 'Cliente') AS cliente, "
+                "COALESCE(v.bairro_entrega,'') AS bairro, COALESCE(v.endereco_entrega,'') AS endereco, "
+                "COALESCE(v.celular_whatsapp,'') AS whatsapp, v.total_liquido, "
+                "COALESCE(v.status_entrega,'pendente') AS status_entrega "
+                "FROM vendas v LEFT JOIN clientes c ON v.cliente_id = c.id "
+                "WHERE v.para_entrega = 1 AND v.entregador_id = %s "
+                "AND COALESCE(v.status_entrega,'pendente') IN ('pendente','em_rota') "
+                "ORDER BY v.data_venda DESC", (ent["id"],))
+
+        def render(rows):
+            tree.delete(*tree.get_children())
+            for r in rows or []:
+                tree.insert("", "end", values=(
+                    r["id"], FormatUtils.format_date(r["data_venda"]), r["cliente"],
+                    r["bairro"], r["endereco"], r["whatsapp"],
+                    "R$ " + FormatUtils.format_money(r["total_liquido"]),
+                    self._entrega_status_label(r["status_entrega"])))
+            if not rows:
+                tree.insert("", "end", values=("", "", "Nenhuma entrega pendente", "", "", "", "", ""))
+
+        def reload():
+            self.run_async(carregar_entregas, render)
+
+        def on_entregadores(rows):
+            entregadores_cache.clear()
+            entregadores_cache.extend(rows or [])
+            combo["values"] = [e["nome"] for e in entregadores_cache]
+            if entregadores_cache:
+                combo.current(0)
+                reload()
+            else:
+                ToastManager.warning("Nenhum entregador cadastrado.")
+
+        combo.bind("<<ComboboxSelected>>", lambda e: reload())
+
+        def _sel_id():
+            sel = tree.selection()
+            if not sel:
+                ToastManager.warning("Selecione uma entrega.")
+                return None
+            val = tree.item(sel[0])["values"][0]
+            if not val:
+                return None
+            return val
+
+        def marcar_em_rota():
+            vid = _sel_id()
+            if vid:
+                self._entrega_set_status(vid, "em_rota", on_done=reload)
+
+        def marcar_entregue():
+            vid = _sel_id()
+            if vid:
+                self._entrega_set_status(vid, "entregue", on_done=reload)
+
+        btns = tk.Frame(content, bg=COR_FUNDO)
+        btns.pack(fill="x", pady=4)
+        StyledButton(btns, text="↻ Atualizar", command=reload,
+                     color="#2a3a5c", width=12).pack(side="left", padx=4)
+        StyledButton(btns, text="🛵 Saiu para entrega", command=marcar_em_rota,
+                     color=COR_BOTAO_AZUL, width=18).pack(side="right", padx=4)
+        StyledButton(btns, text="✔ Marcar ENTREGUE", command=marcar_entregue,
+                     color=COR_BOTAO_VERDE, width=18).pack(side="right", padx=4)
+
+        def load_entregadores():
+            db = DatabaseHelper.get_instance()
+            return db.execute_query(
+                "SELECT id, nome FROM entregadores WHERE ativo = 1 ORDER BY nome")
+        self.run_async(load_entregadores, on_entregadores)
 
     def show_gerenciar_entregas(self):
-        """Gerenciar Entregas - gerenciar entregas pendentes e concluidas."""
+        """Gerenciar Entregas - controle de todas as entregas (pendentes/em rota/entregues)."""
         self.clear_container()
-        top = self._create_top_bar(f"{Icons.ENTREGA} Gerenciar Entregas")
+        self._create_top_bar(f"{Icons.ENTREGA} Gerenciar Entregas")
         content = tk.Frame(self.main_container, bg=COR_FUNDO)
-        content.pack(fill="both", expand=True, padx=20, pady=20)
-        tk.Label(content, text="Gerenciar Entregas",
-                 bg=COR_FUNDO, fg=COR_PRIMARIA,
-                 font=("Segoe UI", 18, "bold")).pack(pady=20)
-        tk.Label(content, text="Funcionalidade em desenvolvimento.\nEm breve voce podera gerenciar todas as entregas aqui.",
-                 bg=COR_FUNDO, fg=COR_TEXTO2,
-                 font=("Segoe UI", 11), justify="center").pack(pady=10)
+        content.pack(fill="both", expand=True, padx=20, pady=12)
+
+        tk.Label(content, text="Gerenciar Entregas", bg=COR_FUNDO, fg=COR_PRIMARIA,
+                 font=("Segoe UI", 16, "bold")).pack(anchor="w")
+
+        state = {"filtro": "pendente"}
+
+        filtro_frame = tk.Frame(content, bg=COR_FUNDO)
+        filtro_frame.pack(fill="x", pady=6)
+
+        cols = ("id", "data", "cliente", "bairro", "endereco", "whatsapp",
+                "entregador", "taxa", "total", "status")
+        tree = ttk.Treeview(content, columns=cols, show="headings", height=12)
+        defs = [("id", "#", 45), ("data", "Data", 125), ("cliente", "Cliente", 140),
+                ("bairro", "Bairro", 105), ("endereco", "Endereco", 190),
+                ("whatsapp", "WhatsApp", 105), ("entregador", "Entregador", 115),
+                ("taxa", "Taxa", 70), ("total", "Total", 85), ("status", "Status", 85)]
+        for key, txt, w in defs:
+            tree.heading(key, text=txt)
+            tree.column(key, width=w,
+                        anchor="center" if key in ("id", "taxa", "total", "status", "data") else "w")
+        tree.pack(fill="both", expand=True, pady=8)
+
+        lbl_info = tk.Label(content, text="", bg=COR_FUNDO, fg=COR_TEXTO2,
+                            font=("Segoe UI", 9))
+        lbl_info.pack(anchor="w")
+
+        def carregar():
+            db = DatabaseHelper.get_instance()
+            base = (
+                "SELECT v.id, v.data_venda, COALESCE(c.nome, v.cliente_nome, 'Cliente') AS cliente, "
+                "COALESCE(v.bairro_entrega,'') AS bairro, COALESCE(v.endereco_entrega,'') AS endereco, "
+                "COALESCE(v.celular_whatsapp,'') AS whatsapp, COALESCE(e.nome,'(a definir)') AS entregador, "
+                "v.taxa_entrega, v.total_liquido, COALESCE(v.status_entrega,'pendente') AS status_entrega "
+                "FROM vendas v LEFT JOIN clientes c ON v.cliente_id = c.id "
+                "LEFT JOIN entregadores e ON v.entregador_id = e.id WHERE v.para_entrega = 1 ")
+            if state["filtro"] != "todas":
+                return db.execute_query(
+                    base + "AND COALESCE(v.status_entrega,'pendente') = %s ORDER BY v.data_venda DESC",
+                    (state["filtro"],))
+            return db.execute_query(base + "ORDER BY v.data_venda DESC")
+
+        def render(rows):
+            tree.delete(*tree.get_children())
+            for r in rows or []:
+                tree.insert("", "end", values=(
+                    r["id"], FormatUtils.format_date(r["data_venda"]), r["cliente"],
+                    r["bairro"], r["endereco"], r["whatsapp"], r["entregador"],
+                    "R$ " + FormatUtils.format_money(r["taxa_entrega"]),
+                    "R$ " + FormatUtils.format_money(r["total_liquido"]),
+                    self._entrega_status_label(r["status_entrega"])))
+            lbl_info.config(text=f"{len(rows or [])} entrega(s) | filtro: {state['filtro']}")
+
+        def reload():
+            self.run_async(carregar, render)
+
+        def set_filtro(f):
+            state["filtro"] = f
+            reload()
+
+        for txt, fval, cor in [("Pendentes", "pendente", COR_ALERTA),
+                               ("Em Rota", "em_rota", COR_BOTAO_AZUL),
+                               ("Entregues", "entregue", COR_BOTAO_VERDE),
+                               ("Todas", "todas", "#2a3a5c")]:
+            StyledButton(filtro_frame, text=txt, command=lambda f=fval: set_filtro(f),
+                         color=cor, width=10).pack(side="left", padx=3)
+        StyledButton(filtro_frame, text="↻ Atualizar", command=reload,
+                     color="#2a3a5c", width=11).pack(side="right", padx=3)
+
+        def _sel_id():
+            sel = tree.selection()
+            if not sel:
+                ToastManager.warning("Selecione uma entrega na lista.")
+                return None
+            return tree.item(sel[0])["values"][0]
+
+        def atribuir():
+            vid = _sel_id()
+            if not vid:
+                return
+
+            def _on(row):
+                if not row:
+                    return
+                db = DatabaseHelper.get_instance()
+
+                def upd():
+                    return db.execute_update(
+                        "UPDATE vendas SET entregador_id = %s WHERE id = %s",
+                        (row[0], vid))
+                self.run_async(upd, lambda _r: (
+                    ToastManager.success(f"Entregador definido: {row[1]}"), reload()))
+
+            self._selecionar_registro(
+                "entregadores", "Atribuir Entregador",
+                "SELECT id, nome, celular FROM entregadores WHERE ativo = 1 ORDER BY nome",
+                ["ID", "Nome", "Celular"], _on)
+
+        def marcar(status):
+            vid = _sel_id()
+            if vid:
+                self._entrega_set_status(vid, status, on_done=reload)
+
+        btns = tk.Frame(content, bg=COR_FUNDO)
+        btns.pack(fill="x", pady=4)
+        StyledButton(btns, text="👤 Atribuir Entregador", command=atribuir,
+                     color=COR_BOTAO_LARANJA, width=18).pack(side="left", padx=3)
+        StyledButton(btns, text="🛵 Em Rota", command=lambda: marcar("em_rota"),
+                     color=COR_BOTAO_AZUL, width=12).pack(side="left", padx=3)
+        StyledButton(btns, text="✔ Entregue", command=lambda: marcar("entregue"),
+                     color=COR_BOTAO_VERDE, width=12).pack(side="left", padx=3)
+        StyledButton(btns, text="↩ Reabrir", command=lambda: marcar("pendente"),
+                     color=COR_ERRO, width=10).pack(side="left", padx=3)
+
+        reload()
 
     def show_cadastro_mesa(self):
         """Cadastro de Mesas - cadastrar, editar e excluir mesas."""
