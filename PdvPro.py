@@ -5614,9 +5614,183 @@ class DatabaseHelper:
                     "VALUES ('Contas a Receber', 'conta_receber', 0, 1)"
                 )
 
+            # === Cardapio do restaurante DELICIAS FOOD (itens cadastrados SEM preco) ===
+            try:
+                self.seed_cardapio_delicias_food()
+            except Exception as _e_card:
+                print(f"Aviso ao semear cardapio Delicias Food: {_e_card}")
+
             # Perfis padrao agora sao criados pelo PermissionDatabaseSetup.setup()
         except Exception as e:
             print(f"Aviso ao inserir dados padrao: {e}")
+
+    # ========================================================================
+    # CARDAPIO DELICIAS FOOD  -  cadastro automatico do cardapio (sem precos)
+    # ========================================================================
+    # Nomes das categorias (tipos_produto). Usados tambem pelo assistente
+    # "MONTE SEU PRATO". Mantidos SEM acento para evitar qualquer divergencia
+    # entre o cadastro e as consultas do assistente.
+    CAT_MONTE_PRATO = "MONTE SEU PRATO"
+    CAT_PROTEINAS = "Proteinas"
+    CAT_ACOMPANHAMENTOS = "Acompanhamentos"
+    CAT_SUCOS = "Sucos"
+    CAT_REFRI_200 = "Refrigerantes 200ml"
+    CAT_REFRI_350 = "Refrigerantes 350ml (Lata)"
+    CAT_AGUAS = "Aguas"
+    CAT_SOBREMESAS = "Sobremesas"
+
+    def seed_cardapio_delicias_food(self):
+        """Cadastra o cardapio do restaurante DELICIAS FOOD.
+
+        - Todos os itens sao cadastrados SEM preco (preco_venda = 0). O preco
+          deve ser definido depois pelo cliente no cadastro de produtos.
+        - Idempotente: so insere o que ainda nao existe (pode rodar a cada
+          inicializacao sem duplicar).
+        - Se a categoria "MONTE SEU PRATO" ja existir, assume-se que o
+          cardapio ja foi cadastrado e o seed e ignorado (evita overhead).
+        """
+        # Se ja existe a categoria principal, considera o cardapio cadastrado.
+        ja_existe = self.execute_query(
+            "SELECT id FROM tipos_produto WHERE descricao = %s LIMIT 1",
+            (self.CAT_MONTE_PRATO,)
+        )
+        if ja_existe:
+            return
+
+        def _get_or_create_tipo(descricao):
+            rows = self.execute_query(
+                "SELECT id FROM tipos_produto WHERE descricao = %s LIMIT 1",
+                (descricao,)
+            )
+            if rows:
+                return rows[0]["id"]
+            return self.execute_update(
+                "INSERT INTO tipos_produto (descricao, ativo) VALUES (%s, 1)",
+                (descricao,)
+            )
+
+        def _ensure_produto(descricao, tipo_id, codigo=None):
+            rows = self.execute_query(
+                "SELECT id FROM produtos WHERE descricao = %s AND tipo_produto_id = %s LIMIT 1",
+                (descricao, tipo_id)
+            )
+            if rows:
+                return rows[0]["id"]
+            # preco_custo / preco_venda = 0 (cliente define depois). Estoque alto
+            # para itens de restaurante (feitos na hora) nao bloquearem a venda.
+            return self.execute_update(
+                "INSERT INTO produtos (codigo, descricao, unidade, tipo_produto_id, "
+                "preco_custo, preco_venda, estoque, estoque_minimo, ativo) "
+                "VALUES (%s, %s, 'UN', %s, 0, 0, 99999, 0, 1)",
+                (codigo, descricao, tipo_id)
+            )
+
+        # ---- MONTE SEU PRATO (tamanhos) ----
+        # O codigo guarda o numero de proteinas que o tamanho permite escolher
+        # (ultimo digito do codigo). Ex.: MSP-G2 = tamanho G com 2 proteinas.
+        tipo_monte = _get_or_create_tipo(self.CAT_MONTE_PRATO)
+        for desc, cod in [
+            ("Tamanho P - 1 Proteina", "MSP-P1"),
+            ("Tamanho P - 2 Proteinas", "MSP-P2"),
+            ("Tamanho G - 1 Proteina", "MSP-G1"),
+            ("Tamanho G - 2 Proteinas", "MSP-G2"),
+        ]:
+            _ensure_produto(desc, tipo_monte, cod)
+
+        # ---- PROTEINAS ----
+        tipo_prot = _get_or_create_tipo(self.CAT_PROTEINAS)
+        proteinas = [
+            "Lasanha bolonhesa", "Lasanha de frango", "Panqueca de carne do sol",
+            "Panqueca de carne", "Panqueca de frango", "Escondidinho de frango",
+            "Escondidinho de carne", "Escondidinho de carne do sol", "Peixada",
+            "Peixe tilapia frita em postas", "Frango assado no forno",
+            "Porco assado na brasa", "Porco ao molho", "Cozido com pirao",
+            "Mao de vaca com pirao", "Frango a milanesa", "Frango parmegiana",
+            "Filezinho grelhado", "Carne trinchada", "Porco trinchado",
+            "Porco frito", "Porco frito no molho barbecue", "File de peixe frito",
+            "Creme de galinha", "Vatapa de frango", "Vatapa de camarao",
+            "Fricasse de frango", "Maninha assada", "Picanha assada",
+            "Picanha de porco assada", "Costelinha suina assada",
+            "Calabresa acebolada", "Escondidinho de calabresa",
+            "Linguica Toscana assada", "Linguica Toscana no forno",
+            "Linguica Toscana no molho barbecue", "Almondega", "Omelete de frango",
+            "Omelete de carne", "Omelete de carne do sol", "Ovo cozido",
+            "Ovo frito", "Feijoada", "Bobo de Camarao",
+        ]
+        for nome in proteinas:
+            _ensure_produto(nome, tipo_prot)
+
+        # ---- ACOMPANHAMENTOS (o codigo guarda o grupo) ----
+        tipo_acomp = _get_or_create_tipo(self.CAT_ACOMPANHAMENTOS)
+        acompanhamentos = [
+            # (descricao, grupo)
+            ("Arroz branco", "ARROZ"), ("Arroz temperado", "ARROZ"),
+            ("Baiao de dois", "ARROZ"), ("Macarrao espaguete", "ARROZ"),
+            ("Macarrao ninho", "ARROZ"),
+            ("Feijao carioca", "FEIJAO"), ("Feijao de corda", "FEIJAO"),
+            ("Feijao preto", "FEIJAO"),
+            ("Salada verde", "SALADA"), ("Salada de legumes", "SALADA"),
+            ("Salada de maionese", "SALADA"), ("Salada acelga com manga", "SALADA"),
+            ("Salada tropical", "SALADA"), ("Salada de repolho refogado", "SALADA"),
+            ("Salada de repolho cremoso", "SALADA"), ("Salada de repolho crua", "SALADA"),
+            ("Beterraba", "SALADA"), ("Batata doce", "SALADA"),
+            ("Abobora refogado", "SALADA"),
+        ]
+        for nome, grupo in acompanhamentos:
+            _ensure_produto(nome, tipo_acomp, f"ACOMP-{grupo}")
+
+        # ---- SUCOS (todos 400ml) ----
+        tipo_sucos = _get_or_create_tipo(self.CAT_SUCOS)
+        sucos = [
+            "Suco de Caja 400ml", "Suco de Caju 400ml", "Suco de Manga 400ml",
+            "Suco de Acerola 400ml", "Suco de Abacaxi 400ml", "Suco de Maracuja 400ml",
+            "Suco de Goiaba 400ml", "Suco de Graviola 400ml", "Suco de Siriguela 400ml",
+            "Suco de Tamarindo 400ml", "Suco de Sapoti 400ml",
+            "Suco de Abacaxi com Hortela 400ml",
+        ]
+        for nome in sucos:
+            _ensure_produto(nome, tipo_sucos)
+
+        # ---- REFRIGERANTES 200ml ----
+        tipo_r200 = _get_or_create_tipo(self.CAT_REFRI_200)
+        refri_200 = [
+            "Coca-Cola 200ml", "Coca-Cola Zero 200ml", "Sao Geraldo 200ml",
+            "Fanta Uva 200ml", "Fanta Laranja 200ml", "Guarana 200ml",
+        ]
+        for nome in refri_200:
+            _ensure_produto(nome, tipo_r200)
+
+        # ---- REFRIGERANTES 350ml (LATA) ----
+        tipo_r350 = _get_or_create_tipo(self.CAT_REFRI_350)
+        refri_350 = [
+            "Coca-Cola Lata 350ml", "Coca-Cola Lata Zero 350ml", "Fanta Uva Lata 350ml",
+            "Fanta Laranja Lata 350ml", "Sao Geraldo Zero 350ml", "Sao Geraldo 350ml",
+            "Guarana Lata 350ml",
+        ]
+        for nome in refri_350:
+            _ensure_produto(nome, tipo_r350)
+
+        # ---- AGUAS ----
+        tipo_aguas = _get_or_create_tipo(self.CAT_AGUAS)
+        for nome in ["Agua com gas 500ml", "Agua sem gas 500ml"]:
+            _ensure_produto(nome, tipo_aguas)
+
+        # ---- SOBREMESAS ----
+        tipo_sobr = _get_or_create_tipo(self.CAT_SOBREMESAS)
+        sobremesas = [
+            "Delicia de abacaxi", "Musse de abacaxi c/ abacaxi caramelizado",
+            "Palha italiana no pote", "Pudim", "Trufas", "Alfajor",
+            "Escondidinho de morango", "Escondidinho de chocolate",
+            "Musse de morango", "Bombom de uva", "Bombom de morango", "Brownie",
+            "Musse de limao", "Musse de maracuja", "Musse de chocolate",
+        ]
+        for nome in sobremesas:
+            _ensure_produto(nome, tipo_sobr)
+
+        try:
+            _logger.info("Cardapio Delicias Food cadastrado (itens sem preco).")
+        except Exception:
+            pass
 
     def _safe_reconnect(self):
         """Forca reconexao descartando a conexao atual (possivelmente corrompida)."""
@@ -10286,6 +10460,17 @@ class PDVApp:
         StyledButton(busca_frame, text="Add", command=self.buscar_por_codigo,
                      color=COR_BOTAO_VERDE, width=6).pack(side="right", padx=2, pady=3)
 
+        # === MONTE SEU PRATO (assistente guiado do cardapio Delicias Food) ===
+        monte_frame = tk.Frame(left, bg=COR_FUNDO)
+        monte_frame.pack(fill="x", pady=(0, 5))
+        btn_monte = StyledButton(
+            monte_frame, text="🍽  MONTE SEU PRATO",
+            command=self.montar_prato_dialog,
+            color=COR_BOTAO_LARANJA, width=30)
+        btn_monte.pack(anchor="w")
+        add_tooltip(btn_monte,
+                    "Montar um prato: tamanho, proteinas, acompanhamentos e extras")
+
         # Carrinho (Treeview)
         cart_header = tk.Frame(left, bg=COR_FUNDO)
         cart_header.pack(fill="x", pady=(5, 2))
@@ -10557,6 +10742,419 @@ class PDVApp:
         del self.carrinho[idx]
         self.atualizar_tree_carrinho()
         ToastManager.info(f"Removido: {nome}")
+
+    # ========================================================================
+    # ASSISTENTE "MONTE SEU PRATO"  (DELICIAS FOOD)
+    # Fluxo: 1) Tamanho  ->  2) Proteinas (limitado pelo tamanho)
+    #        3) Acompanhamentos  ->  4) Revisao/adicionar ao carrinho
+    #        5) Extras (sucos, refrigerantes, aguas, sobremesas)
+    # ========================================================================
+    def montar_prato_dialog(self):
+        """Abre o assistente guiado para montar um prato do cardapio."""
+        db = DatabaseHelper.get_instance()
+
+        def carregar():
+            tamanhos = db.execute_query(
+                "SELECT p.id, p.descricao, p.codigo, p.preco_venda, p.tipo_produto_id "
+                "FROM produtos p JOIN tipos_produto t ON p.tipo_produto_id = t.id "
+                "WHERE t.descricao = %s AND p.ativo = 1 ORDER BY p.id",
+                (DatabaseHelper.CAT_MONTE_PRATO,)
+            )
+            proteinas = db.execute_query(
+                "SELECT p.id, p.descricao FROM produtos p "
+                "JOIN tipos_produto t ON p.tipo_produto_id = t.id "
+                "WHERE t.descricao = %s AND p.ativo = 1 ORDER BY p.descricao",
+                (DatabaseHelper.CAT_PROTEINAS,)
+            )
+            acomp = db.execute_query(
+                "SELECT p.id, p.descricao, COALESCE(p.codigo,'') AS codigo FROM produtos p "
+                "JOIN tipos_produto t ON p.tipo_produto_id = t.id "
+                "WHERE t.descricao = %s AND p.ativo = 1 ORDER BY p.codigo, p.descricao",
+                (DatabaseHelper.CAT_ACOMPANHAMENTOS,)
+            )
+            return {"tamanhos": tamanhos, "proteinas": proteinas, "acomp": acomp}
+
+        def on_loaded(data):
+            if not data or not data.get("tamanhos"):
+                ErroAmigavel.mostrar_aviso(
+                    "O cardapio ainda nao foi cadastrado.\n\n"
+                    "Reinicie o sistema uma vez para que o cardapio do "
+                    "Delicias Food seja criado automaticamente.",
+                    titulo="Monte Seu Prato", parent=self.root)
+                return
+            self._abrir_wizard_prato(data)
+
+        self.run_async(carregar, on_loaded)
+
+    def _abrir_wizard_prato(self, data):
+        tamanhos = data["tamanhos"]
+        proteinas = data["proteinas"]
+        acomp = data["acomp"]
+
+        # Estado da montagem
+        st = {"tam": None, "n_prot": 1, "proteinas": [], "acomp": []}
+
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Monte Seu Prato - Delicias Food")
+        dialog.geometry("760x620")
+        dialog.configure(bg=COR_FUNDO)
+        dialog.transient(self.root)
+        dialog.grab_set()
+
+        # Cabecalho
+        header = tk.Frame(dialog, bg=COR_FUNDO2, height=58)
+        header.pack(fill="x")
+        header.pack_propagate(False)
+        tk.Label(header, text="🍽  MONTE SEU PRATO", bg=COR_FUNDO2,
+                 fg=COR_BOTAO_LARANJA, font=("Segoe UI", 16, "bold")).pack(
+                     side="left", padx=18, pady=10)
+        self._lbl_passo_prato = tk.Label(header, text="", bg=COR_FUNDO2,
+                                         fg=COR_TEXTO2, font=("Segoe UI", 10))
+        self._lbl_passo_prato.pack(side="right", padx=18)
+
+        # Corpo (re-renderizado a cada etapa)
+        body = tk.Frame(dialog, bg=COR_FUNDO)
+        body.pack(fill="both", expand=True, padx=12, pady=8)
+
+        # Rodape (botoes de navegacao)
+        footer = tk.Frame(dialog, bg=COR_FUNDO2, height=56)
+        footer.pack(fill="x")
+        footer.pack_propagate(False)
+
+        def _limpar(frame):
+            for w in frame.winfo_children():
+                w.destroy()
+
+        def _scroll_area(parent):
+            """Cria uma area com rolagem e retorna o frame interno."""
+            wrap = tk.Frame(parent, bg=COR_FUNDO)
+            wrap.pack(fill="both", expand=True)
+            canvas = tk.Canvas(wrap, bg=COR_FUNDO, highlightthickness=0)
+            sb = ttk.Scrollbar(wrap, orient="vertical", command=canvas.yview)
+            inner = tk.Frame(canvas, bg=COR_FUNDO)
+            inner.bind("<Configure>",
+                       lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
+            win = canvas.create_window((0, 0), window=inner, anchor="nw")
+            canvas.bind("<Configure>", lambda e: canvas.itemconfig(win, width=e.width))
+            canvas.configure(yscrollcommand=sb.set)
+            canvas.pack(side="left", fill="both", expand=True)
+            sb.pack(side="right", fill="y")
+
+            def _on_wheel(e):
+                try:
+                    canvas.yview_scroll(int(-1 * (e.delta / 120)), "units")
+                except Exception:
+                    pass
+            canvas.bind_all("<MouseWheel>", _on_wheel)
+            dialog.bind("<Destroy>",
+                        lambda e: canvas.unbind_all("<MouseWheel>"), add="+")
+            return inner
+
+        def _parse_n_prot(tam):
+            """Numero de proteinas que o tamanho permite."""
+            cod = (tam.get("codigo") or "").strip()
+            if cod and cod[-1].isdigit():
+                return int(cod[-1])
+            m = re.search(r"(\d+)\s*Prote", tam.get("descricao", ""))
+            return int(m.group(1)) if m else 1
+
+        # -------------------- ETAPA 1: TAMANHO --------------------
+        def render_tamanho():
+            _limpar(body)
+            _limpar(footer)
+            self._lbl_passo_prato.config(text="Etapa 1 de 4  -  Tamanho")
+            tk.Label(body, text="Escolha o tamanho do prato:", bg=COR_FUNDO,
+                     fg=COR_TEXTO, font=("Segoe UI", 13, "bold")).pack(
+                         anchor="w", pady=(4, 12))
+
+            grid = tk.Frame(body, bg=COR_FUNDO)
+            grid.pack(fill="x")
+
+            def escolher(tam):
+                st["tam"] = tam
+                st["n_prot"] = _parse_n_prot(tam)
+                st["proteinas"] = []
+                render_proteinas()
+
+            for i, tam in enumerate(tamanhos):
+                n = _parse_n_prot(tam)
+                card = tk.Frame(grid, bg=COR_CARD, highlightthickness=1,
+                                highlightbackground=COR_GLASS_BORDER)
+                card.grid(row=i // 2, column=i % 2, padx=8, pady=8,
+                          sticky="nsew", ipadx=10, ipady=10)
+                grid.grid_columnconfigure(i % 2, weight=1)
+                tk.Label(card, text=tam["descricao"], bg=COR_CARD, fg=COR_BOTAO_LARANJA,
+                         font=("Segoe UI", 13, "bold")).pack(anchor="w", padx=10, pady=(6, 2))
+                tk.Label(card, text=f"Escolha {n} proteina(s)", bg=COR_CARD,
+                         fg=COR_TEXTO2, font=("Segoe UI", 10)).pack(anchor="w", padx=10)
+                StyledButton(card, text="Selecionar",
+                             command=lambda t=tam: escolher(t),
+                             color=COR_BOTAO_VERDE, width=14).pack(
+                                 anchor="e", padx=10, pady=(8, 4))
+
+            StyledButton(footer, text="✖ Cancelar", command=dialog.destroy,
+                         color=COR_ERRO, width=12).pack(side="right", padx=12, pady=8)
+
+        # -------------------- ETAPA 2: PROTEINAS --------------------
+        def render_proteinas():
+            _limpar(body)
+            _limpar(footer)
+            self._lbl_passo_prato.config(text="Etapa 2 de 4  -  Proteinas")
+            n = st["n_prot"]
+            tk.Label(body,
+                     text=f"{st['tam']['descricao']}  -  escolha {n} proteina(s):",
+                     bg=COR_FUNDO, fg=COR_TEXTO,
+                     font=("Segoe UI", 13, "bold")).pack(anchor="w", pady=(4, 2))
+            lbl_cont = tk.Label(body, text=f"Selecionadas: 0 / {n}", bg=COR_FUNDO,
+                                fg=COR_ALERTA, font=("Segoe UI", 10, "bold"))
+            lbl_cont.pack(anchor="w", pady=(0, 8))
+
+            inner = _scroll_area(body)
+            prot_vars = {}
+
+            def _atualizar_contador():
+                sel = [pid for pid, (v, _d) in prot_vars.items() if v.get()]
+                lbl_cont.config(text=f"Selecionadas: {len(sel)} / {n}")
+
+            def _on_toggle(pid):
+                sel = [p for p, (v, _d) in prot_vars.items() if v.get()]
+                if len(sel) > n:
+                    prot_vars[pid][0].set(0)
+                    ToastManager.warning(
+                        f"Este tamanho permite apenas {n} proteina(s).")
+                _atualizar_contador()
+
+            cols = 2
+            for i, p in enumerate(proteinas):
+                var = tk.IntVar(value=0)
+                prot_vars[p["id"]] = (var, p["descricao"])
+                cb = tk.Checkbutton(
+                    inner, text=p["descricao"], variable=var,
+                    command=lambda pid=p["id"]: _on_toggle(pid),
+                    bg=COR_FUNDO, fg=COR_TEXTO, selectcolor=COR_CARD,
+                    activebackground=COR_FUNDO, activeforeground=COR_PRIMARIA,
+                    font=("Segoe UI", 10), anchor="w")
+                cb.grid(row=i // cols, column=i % cols, sticky="w", padx=8, pady=2)
+            for c in range(cols):
+                inner.grid_columnconfigure(c, weight=1)
+
+            def avancar():
+                sel = [(pid, d) for pid, (v, d) in prot_vars.items() if v.get()]
+                if len(sel) != n:
+                    ToastManager.warning(
+                        f"Selecione exatamente {n} proteina(s).")
+                    return
+                st["proteinas"] = sel
+                render_acompanhamentos()
+
+            StyledButton(footer, text="◀ Voltar", command=render_tamanho,
+                         color=COR_FUNDO3, width=10).pack(side="left", padx=12, pady=8)
+            StyledButton(footer, text="Avancar ▶", command=avancar,
+                         color=COR_BOTAO_VERDE, width=12).pack(side="right", padx=12, pady=8)
+
+        # -------------------- ETAPA 3: ACOMPANHAMENTOS --------------------
+        def render_acompanhamentos():
+            _limpar(body)
+            _limpar(footer)
+            self._lbl_passo_prato.config(text="Etapa 3 de 4  -  Acompanhamentos")
+            tk.Label(body, text="Escolha os acompanhamentos:", bg=COR_FUNDO,
+                     fg=COR_TEXTO, font=("Segoe UI", 13, "bold")).pack(
+                         anchor="w", pady=(4, 8))
+
+            inner = _scroll_area(body)
+            ac_vars = {}
+            grupos = {
+                "ARROZ": "Arroz / Massas",
+                "FEIJAO": "Feijoes",
+                "SALADA": "Saladas",
+                "": "Outros",
+            }
+            # Agrupar por prefixo do codigo (ACOMP-XXX)
+            por_grupo = {}
+            for a in acomp:
+                cod = a.get("codigo") or ""
+                g = cod.replace("ACOMP-", "") if cod.startswith("ACOMP-") else ""
+                por_grupo.setdefault(g, []).append(a)
+
+            row = 0
+            for gkey in ["ARROZ", "FEIJAO", "SALADA", ""]:
+                itens = por_grupo.get(gkey)
+                if not itens:
+                    continue
+                tk.Label(inner, text=grupos.get(gkey, "Outros"), bg=COR_FUNDO,
+                         fg=COR_PRIMARIA, font=("Segoe UI", 11, "bold")).grid(
+                             row=row, column=0, columnspan=2, sticky="w",
+                             padx=4, pady=(10, 2))
+                row += 1
+                for j, a in enumerate(itens):
+                    var = tk.IntVar(value=0)
+                    ac_vars[a["id"]] = (var, a["descricao"])
+                    cb = tk.Checkbutton(
+                        inner, text=a["descricao"], variable=var,
+                        bg=COR_FUNDO, fg=COR_TEXTO, selectcolor=COR_CARD,
+                        activebackground=COR_FUNDO, activeforeground=COR_PRIMARIA,
+                        font=("Segoe UI", 10), anchor="w")
+                    cb.grid(row=row + j // 2, column=j % 2, sticky="w", padx=8, pady=2)
+                row += (len(itens) + 1) // 2
+            for c in range(2):
+                inner.grid_columnconfigure(c, weight=1)
+
+            def avancar():
+                sel = [(aid, d) for aid, (v, d) in ac_vars.items() if v.get()]
+                if not sel:
+                    ToastManager.warning("Selecione ao menos 1 acompanhamento.")
+                    return
+                st["acomp"] = sel
+                render_revisao()
+
+            StyledButton(footer, text="◀ Voltar", command=render_proteinas,
+                         color=COR_FUNDO3, width=10).pack(side="left", padx=12, pady=8)
+            StyledButton(footer, text="Avancar ▶", command=avancar,
+                         color=COR_BOTAO_VERDE, width=12).pack(side="right", padx=12, pady=8)
+
+        # -------------------- ETAPA 4: REVISAO --------------------
+        def render_revisao():
+            _limpar(body)
+            _limpar(footer)
+            self._lbl_passo_prato.config(text="Etapa 4 de 4  -  Revisao")
+            tk.Label(body, text="Confira o prato montado:", bg=COR_FUNDO,
+                     fg=COR_TEXTO, font=("Segoe UI", 13, "bold")).pack(
+                         anchor="w", pady=(4, 8))
+
+            card = tk.Frame(body, bg=COR_CARD, highlightthickness=1,
+                            highlightbackground=COR_GLASS_BORDER)
+            card.pack(fill="both", expand=True, padx=4, pady=4)
+
+            tk.Label(card, text=st["tam"]["descricao"], bg=COR_CARD,
+                     fg=COR_BOTAO_LARANJA, font=("Segoe UI", 14, "bold")).pack(
+                         anchor="w", padx=14, pady=(12, 6))
+
+            prot_txt = ", ".join(d for _i, d in st["proteinas"])
+            ac_txt = ", ".join(d for _i, d in st["acomp"])
+            tk.Label(card, text="Proteinas:", bg=COR_CARD, fg=COR_PRIMARIA,
+                     font=("Segoe UI", 11, "bold")).pack(anchor="w", padx=14)
+            tk.Label(card, text=prot_txt, bg=COR_CARD, fg=COR_TEXTO,
+                     font=("Segoe UI", 11), wraplength=680, justify="left").pack(
+                         anchor="w", padx=24, pady=(0, 8))
+            tk.Label(card, text="Acompanhamentos:", bg=COR_CARD, fg=COR_PRIMARIA,
+                     font=("Segoe UI", 11, "bold")).pack(anchor="w", padx=14)
+            tk.Label(card, text=ac_txt, bg=COR_CARD, fg=COR_TEXTO,
+                     font=("Segoe UI", 11), wraplength=680, justify="left").pack(
+                         anchor="w", padx=24, pady=(0, 8))
+
+            StyledButton(footer, text="◀ Voltar", command=render_acompanhamentos,
+                         color=COR_FUNDO3, width=10).pack(side="left", padx=12, pady=8)
+            StyledButton(footer, text="✔ Adicionar ao carrinho",
+                         command=adicionar_prato, color=COR_BOTAO_VERDE,
+                         width=22).pack(side="right", padx=12, pady=8)
+
+        def adicionar_prato():
+            tam = st["tam"]
+            prot_nomes = [d for _i, d in st["proteinas"]]
+            ac_nomes = [d for _i, d in st["acomp"]]
+
+            item = ItemVenda()
+            item.produto_id = tam["id"]
+            descricao_full = (
+                f"{tam['descricao']} | Proteinas: {', '.join(prot_nomes)} "
+                f"| Acomp: {', '.join(ac_nomes)}"
+            )
+            # itens_venda.descricao_produto e VARCHAR(200): limita com seguranca.
+            item.descricao_produto = descricao_full[:195]
+            item.preco_unitario = float(tam.get("preco_venda") or 0)
+            item.quantidade = 1
+            item.total = item.preco_unitario
+            item.tipo_produto_id = tam.get("tipo_produto_id")
+            item.tipo_produto_desc = DatabaseHelper.CAT_MONTE_PRATO
+            # adicionais (impressos no cupom de producao/cozinha como "+ ...")
+            item.adicionais = (
+                [f"Proteina: {p}" for p in prot_nomes]
+                + [f"Acomp.: {a}" for a in ac_nomes]
+            )
+            self.carrinho.append(item)
+            self.atualizar_tree_carrinho()
+            ToastManager.success("Prato adicionado ao carrinho!")
+            render_extras_categorias()
+
+        # -------------------- ETAPA 5: EXTRAS --------------------
+        def render_extras_categorias():
+            _limpar(body)
+            _limpar(footer)
+            self._lbl_passo_prato.config(text="Extras (opcional)")
+            tk.Label(body, text="Deseja adicionar bebidas ou sobremesas?",
+                     bg=COR_FUNDO, fg=COR_TEXTO,
+                     font=("Segoe UI", 13, "bold")).pack(anchor="w", pady=(4, 4))
+            tk.Label(body, text="Itens que nao fazem parte do prato.",
+                     bg=COR_FUNDO, fg=COR_TEXTO2,
+                     font=("Segoe UI", 10)).pack(anchor="w", pady=(0, 12))
+
+            grid = tk.Frame(body, bg=COR_FUNDO)
+            grid.pack(fill="x")
+            categorias = [
+                (DatabaseHelper.CAT_SUCOS, "Sucos", COR_BOTAO_LARANJA),
+                (DatabaseHelper.CAT_REFRI_200, "Refrigerantes 200ml", COR_BOTAO_AZUL),
+                (DatabaseHelper.CAT_REFRI_350, "Refrigerantes Lata 350ml", COR_BOTAO_AZUL),
+                (DatabaseHelper.CAT_AGUAS, "Aguas", COR_PRIMARIA),
+                (DatabaseHelper.CAT_SOBREMESAS, "Sobremesas", COR_ACCENT),
+            ]
+            for i, (tipo_desc, rotulo, cor) in enumerate(categorias):
+                StyledButton(grid, text=rotulo,
+                             command=lambda t=tipo_desc, r=rotulo: render_extras_lista(t, r),
+                             color=cor, width=22).grid(
+                                 row=i // 2, column=i % 2, padx=8, pady=8, sticky="w")
+
+            StyledButton(footer, text="+ Montar outro prato",
+                         command=render_tamanho, color=COR_BOTAO_LARANJA,
+                         width=20).pack(side="left", padx=12, pady=8)
+            StyledButton(footer, text="✔ Concluir", command=dialog.destroy,
+                         color=COR_BOTAO_VERDE, width=12).pack(side="right", padx=12, pady=8)
+
+        def render_extras_lista(tipo_desc, rotulo):
+            _limpar(body)
+            _limpar(footer)
+            self._lbl_passo_prato.config(text=f"Extras  -  {rotulo}")
+            tk.Label(body, text=f"{rotulo} - toque para adicionar:", bg=COR_FUNDO,
+                     fg=COR_TEXTO, font=("Segoe UI", 13, "bold")).pack(
+                         anchor="w", pady=(4, 8))
+            inner = _scroll_area(body)
+
+            def carregar_lista():
+                db = DatabaseHelper.get_instance()
+                return db.execute_query(
+                    "SELECT p.id, p.descricao, p.preco_venda, p.tipo_produto_id "
+                    "FROM produtos p JOIN tipos_produto t ON p.tipo_produto_id = t.id "
+                    "WHERE t.descricao = %s AND p.ativo = 1 ORDER BY p.descricao",
+                    (tipo_desc,)
+                )
+
+            def on_lista(rows):
+                for w in inner.winfo_children():
+                    w.destroy()
+                for i, p in enumerate(rows or []):
+                    linha = tk.Frame(inner, bg=COR_CARD if i % 2 else COR_GLASS)
+                    linha.pack(fill="x", padx=4, pady=1)
+                    tk.Label(linha, text=p["descricao"],
+                             bg=linha.cget("bg"), fg=COR_TEXTO,
+                             font=("Segoe UI", 10), anchor="w").pack(
+                                 side="left", padx=8, pady=4, fill="x", expand=True)
+                    StyledButton(
+                        linha, text="+ Adicionar",
+                        command=lambda pr=p: (
+                            self.adicionar_ao_carrinho(
+                                pr["id"], pr["descricao"],
+                                float(pr.get("preco_venda") or 0), 1,
+                                pr.get("tipo_produto_id"), rotulo),
+                            ToastManager.info(f"Adicionado: {pr['descricao']}")),
+                        color=COR_BOTAO_VERDE, width=12).pack(side="right", padx=6, pady=3)
+
+            self.run_async(carregar_lista, on_lista)
+
+            StyledButton(footer, text="◀ Voltar", command=render_extras_categorias,
+                         color=COR_FUNDO3, width=10).pack(side="left", padx=12, pady=8)
+            StyledButton(footer, text="✔ Concluir", command=dialog.destroy,
+                         color=COR_BOTAO_VERDE, width=12).pack(side="right", padx=12, pady=8)
+
+        render_tamanho()
 
     def limpar_carrinho(self):
         if self.carrinho:
