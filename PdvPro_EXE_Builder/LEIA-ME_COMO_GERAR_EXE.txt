@@ -1,0 +1,71 @@
+============================================================
+ PDV PRO - COMO GERAR O EXE (Windows)
+============================================================
+
+IMPORTANTE: O .EXE do Windows SO PODE SER GERADO NO WINDOWS.
+Nao da para gerar .exe a partir de Linux/Mac (o PyInstaller nao
+faz compilacao cruzada). Faca estes passos numa maquina Windows.
+
+------------------------------------------------------------
+POR QUE SEU BUILD ANTIGO DAVA ERRO ("pyinstaller / pkg")
+------------------------------------------------------------
+O builder antigo (ManusApiPro) instalava o pacote "pymysql",
+MAS o PdvPro.py usa "import mysql.connector"
+(pacote mysql-connector-python). Sem ele - e sem os modulos
+"escondidos" do mysql.connector - o PyInstaller gera um .exe
+que quebra com erro de modulo/pkg_resources ao abrir.
+
+Este kit ja corrige isso:
+- requirements.txt usa mysql-connector-python (correto)
+- os .bat e o .spec ja incluem os hidden-imports e o
+  --copy-metadata que resolvem o erro de "pkg".
+
+------------------------------------------------------------
+PASSO A PASSO
+------------------------------------------------------------
+1) Instale o Python 3.11 ou 3.12 (64-bit) em:
+   https://www.python.org/downloads/windows/
+   -> MARQUE a opcao "Add Python to PATH" na instalacao.
+
+2) Copie o arquivo PdvPro.py para DENTRO desta pasta
+   (precisa ficar do lado dos arquivos .bat).
+
+3) De 2 cliques em:  01_instalar_dependencias.bat
+   (instala PyInstaller, mysql-connector-python, Pillow, pywin32)
+
+4) De 2 cliques em:  02_gerar_exe_sem_console.bat
+   Ao terminar, o executavel estara em:
+        dist\PdvPro.exe
+
+   (Alternativa: 06_gerar_exe_usando_spec.bat - usa o PdvPro.spec)
+
+5) Para distribuir, copie o arquivo dist\PdvPro.exe.
+
+------------------------------------------------------------
+SE DER ERRO / O EXE NAO ABRIR
+------------------------------------------------------------
+- Rode 03_gerar_exe_com_console_debug.bat. Ele gera
+  dist\PdvPro_debug.exe COM console. Abra o Prompt de Comando,
+  arraste o PdvPro_debug.exe para dentro e tecle Enter:
+  a mensagem de erro real vai aparecer na tela.
+
+- Erro de antivirus: alguns antivirus bloqueiam .exe gerados
+  por PyInstaller (falso positivo). Libere/whiteliste o arquivo.
+
+- "mysql"/"pkg_resources": confirme que rodou o passo 3
+  (01_instalar_dependencias.bat) sem erros.
+
+- O programa precisa de um servidor MySQL acessivel. Configure
+  o banco na primeira tela de conexao do PDV.
+
+------------------------------------------------------------
+ARQUIVOS DESTE KIT
+------------------------------------------------------------
+01_instalar_dependencias.bat    -> instala tudo
+02_gerar_exe_sem_console.bat     -> gera o PdvPro.exe (recomendado)
+03_gerar_exe_com_console_debug.bat -> versao para ver erros
+05_limpar_build.bat              -> apaga build/ e dist/
+06_gerar_exe_usando_spec.bat     -> gera usando PdvPro.spec
+PdvPro.spec                      -> configuracao do PyInstaller
+requirements.txt                 -> dependencias
+============================================================
