@@ -19161,6 +19161,52 @@ function enviarPedido() {{
     # SISTEMA DE IMPRESSAO CENTRALIZADO
     # ========================================================================
 
+    def _gerar_logo_escpos(self, caminho, paper_dots=576):
+        """Converte a imagem da logo em bytes ESC/POS (raster GS v 0) para
+        imprimir no topo do cupom em impressora termica.
+        Retorna b'' se nao for possivel (sem PIL, arquivo inexistente, etc.)."""
+        try:
+            if not caminho or not os.path.exists(caminho):
+                return b""
+            if not HAS_PIL:
+                return b""
+            from PIL import Image
+            img = Image.open(caminho).convert("L")
+            # Largura alvo: ~90% da largura do papel
+            max_w = max(8, int(paper_dots * 0.9))
+            if img.width > max_w:
+                r = max_w / float(img.width)
+                img = img.resize((max_w, max(1, int(img.height * r))))
+            # Limitar a altura para nao gastar papel demais
+            max_h = 320
+            if img.height > max_h:
+                r = max_h / float(img.height)
+                img = img.resize((max(1, int(img.width * r)), max_h))
+            wbytes = (img.width + 7) // 8
+            W = wbytes * 8
+            # Fundo branco com a logo colada (largura multipla de 8)
+            canvas = Image.new("L", (W, img.height), 255)
+            canvas.paste(img, (0, 0))
+            bw = canvas.point(lambda p: 0 if p < 128 else 255, mode="1")
+            px = bw.load()
+            h = bw.height
+            data = bytearray()
+            for y in range(h):
+                for xb in range(wbytes):
+                    b = 0
+                    base = xb * 8
+                    for bit in range(8):
+                        if px[base + bit, y] == 0:  # pixel preto
+                            b |= (1 << (7 - bit))
+                    data.append(b)
+            header = (b"\x1d\x76\x30\x00"
+                      + bytes([wbytes & 0xFF, (wbytes >> 8) & 0xFF,
+                               h & 0xFF, (h >> 8) & 0xFF]))
+            # ESC a 1 = centraliza; imprime a logo; ESC a 0 = volta a esquerda
+            return b"\x1b\x61\x01" + header + bytes(data) + b"\n" + b"\x1b\x61\x00"
+        except Exception:
+            return b""
+
     def _imprimir_texto(self, texto, config=None, parent_window=None):
         """Metodo centralizado de impressao.
         Envia texto para a impressora configurada usando o metodo mais adequado:
@@ -19239,32 +19285,55 @@ function enviarPedido() {{
                     dados_envio += b"\x1b\x74" + bytes([cp_num])
                     break
 
-            # Selecionar fonte conforme configuracao
-            # ESC M n: 0=Font A (normal, 12x24), 1=Font B (condensada, 9x17)
-            # ESC ! n: Bit 0=Font B, Bit 3=Emphasized, Bit 4=Double-height, Bit 5=Double-width
-            if modo_fonte == "Condensada":
-                # Font B (condensada) - mais caracteres por linha
-                dados_envio += b"\x1b\x4d\x01"  # ESC M 1 = Font B
-                dados_envio += b"\x1b\x21\x01"  # ESC ! 0x01 = Font B mode
-            elif modo_fonte == "Comprimida":
-                # Font B + sem enfase = mais compacto possivel
-                dados_envio += b"\x1b\x4d\x01"  # ESC M 1 = Font B
-                dados_envio += b"\x1b\x21\x01"  # ESC ! 0x01 = Font B mode
-                # ESC 3 n = Set line spacing to n/180 inch (menor = mais compacto)
-                dados_envio += b"\x1b\x33\x12"  # 18/180 = 0.1 inch
-            else:
-                # Font A (normal/padrao)
-                dados_envio += b"\x1b\x4d\x00"  # ESC M 0 = Font A
-                dados_envio += b"\x1b\x21\x00"  # ESC ! 0x00 = Font A mode
+            # Selecionar fonte + aplicar NEGRITO e TAMANHO MAIOR conforme config
+            # ESC M n: 0=Font A (normal/maior), 1=Font B (condensada/menor)
+            # ESC ! n: Bit0=Font B, Bit3=Enfase(negrito), Bit4=Dupla altura, Bit5=Dupla largura
+            negrito = config.get("negrito", True)
+            fonte_grande = config.get("fonte_grande", True)
 
-            # ESC 2 = Set default line spacing (se nao for comprimida)
-            if modo_fonte != "Comprimida":
-                dados_envio += b"\x1b\x32"
+            # Com "fonte grande" ligada usamos sempre Font A (letras maiores).
+            # Font B (condensada/comprimida) so quando a fonte grande esta desligada.
+            usar_font_b = (modo_fonte in ("Condensada", "Comprimida")) and not fonte_grande
+
+            mode_byte = 0x00
+            if usar_font_b:
+                dados_envio += b"\x1b\x4d\x01"  # ESC M 1 = Font B
+                mode_byte |= 0x01
+            else:
+                dados_envio += b"\x1b\x4d\x00"  # ESC M 0 = Font A (maior)
+            if negrito:
+                mode_byte |= 0x08  # enfase (negrito)
+            if fonte_grande:
+                mode_byte |= 0x10  # dupla altura (letras maiores, mantem as colunas)
+            dados_envio += b"\x1b\x21" + bytes([mode_byte])  # ESC ! - modo de impressao
+            # Reforca o negrito (ESC E) para impressoras que ignoram o bit do ESC !
+            dados_envio += b"\x1b\x45\x01" if negrito else b"\x1b\x45\x00"
+
+            # Espacamento entre linhas
+            if fonte_grande:
+                # Dupla altura precisa de mais espaco entre linhas p/ nao sobrepor
+                dados_envio += b"\x1b\x33\x38"  # ~56 dots
+            elif modo_fonte == "Comprimida":
+                dados_envio += b"\x1b\x33\x12"  # 18/180 = compacto
+            else:
+                dados_envio += b"\x1b\x32"  # padrao
+
+        # === LOGO no topo do cupom (impressora termica) ===
+        if tipo == "Termica" and config.get("imprimir_logo") and config.get("caminho_logo"):
+            try:
+                paper_dots = 384 if str(config.get("tamanho_papel", "80mm")).startswith("58") else 576
+                logo_bytes = self._gerar_logo_escpos(config.get("caminho_logo"), paper_dots)
+                if logo_bytes:
+                    dados_envio += logo_bytes
+            except Exception as _e_logo:
+                try:
+                    _logger.warning(f"Falha ao imprimir logo do cupom: {_e_logo}")
+                except Exception:
+                    pass
 
         dados_envio += texto_bytes
 
         if tipo == "Termica":
-            # Avanco generoso de linhas para o texto nao ser cortado
             # 8 linhas garante que o texto fique acima da lamina de corte
             dados_envio += b"\n\n\n\n\n\n\n\n"
             # Corte automatico (GS V 66 0 = corte parcial com feed)
@@ -19533,8 +19602,10 @@ function enviarPedido() {{
             "nome_impressora": "",
             "tamanho_papel": "80mm",
             "largura_papel": 48,
-            "modo_fonte": "Condensada",
+            "modo_fonte": "Normal",
             "tamanho_fonte": 8,
+            "negrito": True,
+            "fonte_grande": True,
             "corte_automatico": True,
             "abrir_gaveta": False,
             "imprimir_logo": False,
@@ -20560,6 +20631,22 @@ function enviarPedido() {{
                        font=("Segoe UI", 10)).grid(
                        row=5, column=0, columnspan=2, sticky="w", padx=5, pady=3)
 
+        # Negrito (letras em negrito)
+        var_negrito = tk.BooleanVar(value=config.get("negrito", True))
+        tk.Checkbutton(card3, text="Negrito (letras do cupom em negrito)",
+                       variable=var_negrito, bg=COR_CARD, fg=COR_TEXTO,
+                       selectcolor=COR_ENTRADA, activebackground=COR_CARD,
+                       font=("Segoe UI", 10)).grid(
+                       row=6, column=0, columnspan=2, sticky="w", padx=5, pady=3)
+
+        # Fonte grande (letras maiores)
+        var_fonte_grande = tk.BooleanVar(value=config.get("fonte_grande", True))
+        tk.Checkbutton(card3, text="Fonte grande (letras maiores no cupom)",
+                       variable=var_fonte_grande, bg=COR_CARD, fg=COR_TEXTO,
+                       selectcolor=COR_ENTRADA, activebackground=COR_CARD,
+                       font=("Segoe UI", 10)).grid(
+                       row=7, column=0, columnspan=2, sticky="w", padx=5, pady=3)
+
         # === CARD 4: Botoes de Acao ===
         card4 = CardFrame(content)
         card4.pack(fill="x", padx=20, pady=8)
@@ -20616,6 +20703,8 @@ function enviarPedido() {{
                 "largura_papel": largura,
                 "modo_fonte": combo_modo_fonte.get(),
                 "tamanho_fonte": fonte,
+                "negrito": var_negrito.get(),
+                "fonte_grande": var_fonte_grande.get(),
                 "margem_esquerda": m_esq,
                 "margem_direita": m_dir,
                 "espacamento_linhas": espac,
@@ -20811,6 +20900,8 @@ function enviarPedido() {{
                 var_logo.set(False)
                 et_logo.delete(0, tk.END)
                 var_auto.set(False)
+                var_negrito.set(True)
+                var_fonte_grande.set(True)
                 self.show_success("Configuracoes restauradas para os valores padrao.")
 
         StyledButton(btn_frame, text="Salvar Configuracoes",
