@@ -10696,6 +10696,98 @@ class PDVApp:
             self.venda_cliente_id = row[0]
             self.venda_cliente_nome = row[1]
             self.lbl_cliente_venda.config(text=self.venda_cliente_nome)
+            # Preencher automaticamente os dados de entrega a partir do cadastro
+            self._preencher_entrega_do_cliente(row[0])
+
+    def _preencher_entrega_do_cliente(self, cliente_id):
+        """Ao selecionar um cliente, puxa endereco, bairro (com a taxa) e
+        WhatsApp do cadastro e preenche a secao de entrega automaticamente."""
+        if not cliente_id:
+            return
+
+        def load():
+            db = DatabaseHelper.get_instance()
+            rows = db.execute_query(
+                "SELECT nome, celular, endereco, numero, bairro, cidade, uf "
+                "FROM clientes WHERE id = %s LIMIT 1", (cliente_id,))
+            taxas = db.execute_query(
+                "SELECT bairro, taxa FROM taxa_entrega_bairro WHERE ativo = 1")
+            return {"cli": rows[0] if rows else None, "taxas": taxas or []}
+
+        def done(data):
+            cli = (data or {}).get("cli")
+            if not cli:
+                return
+
+            # Montar o endereco completo
+            partes = []
+            if cli.get("endereco"):
+                partes.append(str(cli["endereco"]))
+            if cli.get("numero"):
+                partes.append(f"n {cli['numero']}")
+            if cli.get("bairro"):
+                partes.append(str(cli["bairro"]))
+            if cli.get("cidade"):
+                cid = str(cli["cidade"])
+                if cli.get("uf"):
+                    cid += f"/{cli['uf']}"
+                partes.append(cid)
+            endereco = ", ".join(partes)
+            celular = (cli.get("celular") or "").strip()
+            bairro_cli = (cli.get("bairro") or "").strip()
+
+            # So ativa a entrega se o cliente tiver algum dado de entrega
+            if not (endereco or celular or bairro_cli):
+                return
+
+            # Mostrar a secao de entrega (se ainda nao estiver marcada)
+            if not getattr(self, "venda_para_entrega", False):
+                try:
+                    self._var_entrega.set(1)
+                    self._toggle_entrega()
+                except Exception:
+                    pass
+
+            # Preencher endereco e WhatsApp
+            try:
+                self.et_endereco_entrega.delete(0, tk.END)
+                self.et_endereco_entrega.insert(0, endereco)
+            except Exception:
+                pass
+            try:
+                self.et_whatsapp_entrega.delete(0, tk.END)
+                self.et_whatsapp_entrega.insert(0, celular)
+            except Exception:
+                pass
+
+            # Casar o bairro do cliente com a taxa cadastrada (se existir)
+            if bairro_cli:
+                taxa = 0.0
+                bairro_final = bairro_cli
+                for t in data.get("taxas", []):
+                    if str(t.get("bairro", "")).strip().lower() == bairro_cli.lower():
+                        try:
+                            taxa = float(t.get("taxa") or 0)
+                        except Exception:
+                            taxa = 0.0
+                        bairro_final = t.get("bairro") or bairro_cli
+                        break
+                self.venda_bairro_entrega = bairro_final
+                self.venda_taxa_entrega = taxa
+                try:
+                    if taxa > 0:
+                        self.lbl_bairro_entrega.config(
+                            text=f"{bairro_final}  (R$ {FormatUtils.format_money(taxa)})")
+                    else:
+                        self.lbl_bairro_entrega.config(
+                            text=f"{bairro_final}  (taxa nao cadastrada)")
+                except Exception:
+                    pass
+
+            self.atualizar_totais_venda()
+            ToastManager.info("Dados de entrega preenchidos pelo cadastro do cliente.")
+
+        self.run_async(load, done)
 
     # ------------------------------------------------------------------
     # MODULO DE ENTREGA  -  captura de dados na tela de venda
