@@ -19161,9 +19161,11 @@ function enviarPedido() {{
     # SISTEMA DE IMPRESSAO CENTRALIZADO
     # ========================================================================
 
-    def _gerar_logo_escpos(self, caminho, paper_dots=576):
+    def _gerar_logo_escpos(self, caminho, paper_dots=576, largura_pct=45):
         """Converte a imagem da logo em bytes ESC/POS (raster GS v 0) para
         imprimir no topo do cupom em impressora termica.
+        - largura_pct: largura da logo como % da largura do papel (ex.: 45).
+        Mantem a proporcao original (nao estica) e limita a altura.
         Retorna b'' se nao for possivel (sem PIL, arquivo inexistente, etc.)."""
         try:
             if not caminho or not os.path.exists(caminho):
@@ -19172,16 +19174,24 @@ function enviarPedido() {{
                 return b""
             from PIL import Image
             img = Image.open(caminho).convert("L")
-            # Largura alvo: ~90% da largura do papel
-            max_w = max(8, int(paper_dots * 0.9))
-            if img.width > max_w:
-                r = max_w / float(img.width)
-                img = img.resize((max_w, max(1, int(img.height * r))))
-            # Limitar a altura para nao gastar papel demais
-            max_h = 320
+
+            # Largura alvo conforme a % configurada (nunca aumenta a imagem)
+            try:
+                pct = float(largura_pct)
+            except Exception:
+                pct = 45.0
+            pct = max(15.0, min(100.0, pct))
+            alvo_w = max(8, int(paper_dots * (pct / 100.0)))
+            if img.width > alvo_w:
+                r = alvo_w / float(img.width)
+                img = img.resize((alvo_w, max(1, int(round(img.height * r)))))
+
+            # Limitar altura (proporcional) para nao gastar papel/esticar
+            max_h = int(paper_dots * 0.5)
             if img.height > max_h:
                 r = max_h / float(img.height)
-                img = img.resize((max(1, int(img.width * r)), max_h))
+                img = img.resize((max(1, int(round(img.width * r))), max_h))
+
             wbytes = (img.width + 7) // 8
             W = wbytes * 8
             # Fundo branco com a logo colada (largura multipla de 8)
@@ -19322,7 +19332,9 @@ function enviarPedido() {{
         if tipo == "Termica" and config.get("imprimir_logo") and config.get("caminho_logo"):
             try:
                 paper_dots = 384 if str(config.get("tamanho_papel", "80mm")).startswith("58") else 576
-                logo_bytes = self._gerar_logo_escpos(config.get("caminho_logo"), paper_dots)
+                logo_bytes = self._gerar_logo_escpos(
+                    config.get("caminho_logo"), paper_dots,
+                    largura_pct=config.get("logo_largura_pct", 45))
                 if logo_bytes:
                     dados_envio += logo_bytes
             except Exception as _e_logo:
@@ -19610,6 +19622,7 @@ function enviarPedido() {{
             "abrir_gaveta": False,
             "imprimir_logo": False,
             "caminho_logo": "",
+            "logo_largura_pct": 45,
             "num_copias": 1,
             "margem_esquerda": 0,
             "margem_direita": 0,
@@ -20623,6 +20636,16 @@ function enviarPedido() {{
                   relief="flat", font=("Segoe UI", 10), cursor="hand2",
                   command=selecionar_logo, width=3).pack(side="left", padx=(5, 0))
 
+        # Largura da logo (% da largura do papel)
+        tk.Label(card3, text="Largura da logo (%):", bg=COR_GLASS, fg=COR_TEXTO,
+                 font=("Segoe UI", 10)).grid(row=8, column=0, sticky="w", padx=5, pady=4)
+        et_logo_pct = StyledEntry(card3, width=8)
+        et_logo_pct.insert(0, str(config.get("logo_largura_pct", 45)))
+        et_logo_pct.grid(row=8, column=1, sticky="w", padx=5, pady=4)
+        tk.Label(card3, text="(menor = logo menor. Ex.: 45)", bg=COR_CARD,
+                 fg=COR_TEXTO2, font=("Segoe UI", 8)).grid(
+                 row=9, column=1, sticky="w", padx=5)
+
         # Impressao Automatica
         var_auto = tk.BooleanVar(value=config.get("imprimir_automatico", False))
         tk.Checkbutton(card3, text="Imprimir Automaticamente ao Finalizar Venda",
@@ -20694,6 +20717,15 @@ function enviarPedido() {{
             if copias > 10:
                 copias = 10
 
+            try:
+                logo_pct = int(float(et_logo_pct.get().strip().replace(",", ".")))
+            except Exception:
+                logo_pct = 45
+            if logo_pct < 15:
+                logo_pct = 15
+            if logo_pct > 100:
+                logo_pct = 100
+
             return {
                 "tipo_impressora": combo_tipo.get(),
                 "nome_impressora": et_nome.get().strip(),
@@ -20714,6 +20746,7 @@ function enviarPedido() {{
                 "abrir_gaveta": var_gaveta.get(),
                 "imprimir_logo": var_logo.get(),
                 "caminho_logo": et_logo.get().strip(),
+                "logo_largura_pct": logo_pct,
                 "imprimir_automatico": var_auto.get()
             }
 
