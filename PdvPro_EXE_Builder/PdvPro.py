@@ -6221,6 +6221,7 @@ class CupomGenerator:
             # === RODAPE ===
             _add_center(f"PDV Pro v{APP_VERSION}")
             _add_center("Obrigado pela preferencia!")
+            _add_center("Contato sistema: (85) 98123-7727")
             sb.append(line_eq)
 
             # Aplicar espacamento entre linhas
