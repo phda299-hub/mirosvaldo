@@ -1,0 +1,12 @@
+# Dependencias para gerar o EXE do PDV Pro (rodar no WINDOWS)
+pyinstaller>=6.0.0
+
+# Banco de dados - o PdvPro usa "import mysql.connector"
+# (NAO use pymysql aqui - era a causa do erro do builder antigo)
+mysql-connector-python>=8.0.33
+
+# Imagens (logo da empresa, fotos de produto)
+Pillow>=10.0.0
+
+# Impressao em impressora termica/Windows (opcional, mas recomendado)
+pywin32>=306
