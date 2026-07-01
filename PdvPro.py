@@ -6075,6 +6075,24 @@ class CupomGenerator:
             sb.append(line_sep)
 
             # === ITENS ===
+            def _item_nome_extras(item):
+                """Separa o nome principal do item dos detalhes (proteinas e
+                acompanhamentos do MONTE SEU PRATO), para impressao no cupom."""
+                raw = (item.descricao_produto or "").strip()
+                if " | " in raw:
+                    partes = [p.strip() for p in raw.split(" | ") if p.strip()]
+                    return partes[0], partes[1:]
+                ad = getattr(item, "adicionais", None) or []
+                extras = [a if isinstance(a, str) else str(a) for a in ad]
+                return raw, extras
+
+            def _print_extras(extras):
+                """Imprime as proteinas/acompanhamentos indentados, com fonte
+                visivel e quebra de linha automatica (abaixo do prato)."""
+                for ex in extras:
+                    for ln in CupomGenerator._wrap_text(ex, largura_util - 3):
+                        _add("   " + ln)
+
             # Layout adaptativo conforme largura
             if largura_util >= 46:
                 # Layout padrao: ITEM DESCRICAO QTD UNIT TOTAL em 1 linha
@@ -6095,16 +6113,24 @@ class CupomGenerator:
                 sb.append(line_sep)
 
                 for i, item in enumerate(itens, 1):
-                    desc = (item.descricao_produto or "")[:col_desc]
+                    nome, extras = _item_nome_extras(item)
                     qty = f"{item.quantidade:.0f}" if item.quantidade == int(item.quantidade) else f"{item.quantidade:.3f}"
                     unit = FormatUtils.format_money(item.preco_unitario)
                     total = FormatUtils.format_money(item.total)
-                    linha = (f"{i:<{col_item}} "
-                             f"{desc:<{col_desc}} "
-                             f"{qty:>{col_qty}} "
-                             f"{unit:>{col_unit}} "
-                             f"{total:>{col_total_val}}")
-                    _add(linha[:largura_util])
+                    if extras or len(nome) > col_desc:
+                        # Prato montado (ou nome longo): nome em linha propria,
+                        # detalhes indentados e valores alinhados a direita
+                        _add_wrap(f"{i}. {nome}")
+                        _print_extras(extras)
+                        _add_right(f"{qty} x {unit} = R$ {total}")
+                    else:
+                        desc = nome[:col_desc]
+                        linha = (f"{i:<{col_item}} "
+                                 f"{desc:<{col_desc}} "
+                                 f"{qty:>{col_qty}} "
+                                 f"{unit:>{col_unit}} "
+                                 f"{total:>{col_total_val}}")
+                        _add(linha[:largura_util])
 
             elif largura_util >= 32:
                 # Layout compacto: 2 linhas por item
@@ -6114,23 +6140,24 @@ class CupomGenerator:
                 sb.append(line_sep)
 
                 for i, item in enumerate(itens, 1):
-                    desc = (item.descricao_produto or "")[:largura_util - 5]
+                    nome, extras = _item_nome_extras(item)
                     qty = f"{item.quantidade:.0f}" if item.quantidade == int(item.quantidade) else f"{item.quantidade:.3f}"
                     unit = FormatUtils.format_money(item.preco_unitario)
                     total = FormatUtils.format_money(item.total)
-                    _add(f"{i:>3}. {desc}")
-                    valor_line = f"{qty} x {unit} = R$ {total}"
-                    _add_right(valor_line)
+                    _add_wrap(f"{i:>3}. {nome}")
+                    _print_extras(extras)
+                    _add_right(f"{qty} x {unit} = R$ {total}")
 
             else:
                 # Layout ultra-compacto (< 32 colunas)
                 _add("ITENS:")
                 sb.append(line_sep)
                 for i, item in enumerate(itens, 1):
-                    desc = (item.descricao_produto or "")[:largura_util - 4]
+                    nome, extras = _item_nome_extras(item)
                     qty = f"{item.quantidade:.0f}" if item.quantidade == int(item.quantidade) else f"{item.quantidade:.3f}"
                     total = FormatUtils.format_money(item.total)
-                    _add(f"{i}. {desc}")
+                    _add_wrap(f"{i}. {nome}")
+                    _print_extras(extras)
                     _add_right(f"{qty} R$ {total}")
 
             sb.append(line_sep)
